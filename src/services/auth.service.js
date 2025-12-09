@@ -4,10 +4,11 @@ import { User } from "../models/user.model.js";
 import { StringError } from "../errors/string.error.js";
 import { createAccessToken, createRefreshToken } from "../utils/jwt.util.js";
 
-const refreshAccessToken = async (req) => {
+const refreshAccessToken = async (req,res) => {
   try {
-    const { refreshToken } = req.body; // frontend sends refresh token
+    const refreshToken = req.cookies.refreshToken;
 
+    console.log("refreshToken",refreshToken);
     if (!refreshToken) throw new StringError("Refresh token is required");
 
     let payload;
@@ -23,12 +24,24 @@ const refreshAccessToken = async (req) => {
     if (!user) throw new StringError("User not found");
 
     // Generate new tokens
-    const newAccessToken = createAccessToken({ id: user._id, email: user.email });
-    const newRefreshToken = createRefreshToken({ id: user._id, email: user.email });
+    const newAccessToken = createAccessToken({ id: user._id, email: user.email, userType : user.userType });
+    const newRefreshToken = createRefreshToken({ id: user._id, email: user.email,userType : user.userType });
+
+    res.cookie("refreshToken", newRefreshToken, {
+      httpOnly: true,
+      secure: false, // change to true in production
+      sameSite: "strict",
+      maxAge: 7 * 24 * 60 * 60 * 1000,
+    });
 
     return {
       accessToken: newAccessToken,
-      refreshToken: newRefreshToken,
+      user: {
+        id: user._id,
+        name: user.name,
+        email: user.email,
+        userType: user.userType,
+      },
     };
 
   } catch (error) {
@@ -37,18 +50,20 @@ const refreshAccessToken = async (req) => {
   }
 };
 
-const logoutUser = async (req) => {
+export const logoutUser = async (req) => {
   try {
-    const { refreshToken } = req.body;
+    const refreshToken = req.cookies.refreshToken;
 
-    if (!refreshToken) throw new StringError("Refresh token required");
+    if (!refreshToken) {
+      throw new StringError("Refresh token not found");
+    }
 
-    // Optional: remove refresh token from DB/session
-    // await TokenModel.deleteOne({ token: refreshToken });
+    // No DB model? No problem. 
+    // Just clear the cookie on controller level.
+    return { success: true, message: "Logout successful" };
 
-    return { message: "Logout successful" };
   } catch (error) {
-    if (error instanceof StringError) throw error;
+    console.log(error);
     throw new StringError("Logout failed");
   }
 };

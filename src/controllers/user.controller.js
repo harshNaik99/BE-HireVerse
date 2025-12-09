@@ -4,9 +4,36 @@ import { StringError } from "../errors/string.error.js";
 import httpStatusCodes from "http-status-codes";
 import userService from "../services/user.service.js";
 
-export const handleServiceCall = async ({ req, res, serviceMethod, successMessage }) => {
+export const handleServiceCall = async ({ 
+  req, 
+  res, 
+  serviceMethod, 
+  successMessage, 
+  clearRefreshToken = false  // <-- added
+}) => {
   try {
-    const result = await serviceMethod(req);
+    const result = await serviceMethod(req, res);
+
+    // Set refresh token if login/register returns one
+    if (result?.refreshToken) {
+      res.cookie("refreshToken", result.refreshToken, {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === "production",
+        sameSite: "strict",
+        path: "/",
+        maxAge: 7 * 24 * 60 * 60 * 1000,
+      });
+    }
+
+    // SPECIAL CASE: Logout → remove refresh token cookie
+    if (clearRefreshToken) {
+      res.clearCookie("refreshToken", {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === "production",
+        sameSite: "strict",
+        path: "/",
+      });
+    }
 
     return sendObjectResponse({
       res,
@@ -32,6 +59,7 @@ export const handleServiceCall = async ({ req, res, serviceMethod, successMessag
     });
   }
 };
+
 
 export const registerUser = (req, res) =>
   handleServiceCall({

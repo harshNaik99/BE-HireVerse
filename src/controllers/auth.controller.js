@@ -5,7 +5,7 @@ export const refreshToken = (req, res) =>
   handleServiceCall({
     req,
     res,
-    serviceMethod: authService.refreshAccessToken,
+    serviceMethod: (req) => authService.refreshAccessToken(req,res),
     successMessage: "Access token refreshed",
   });
 
@@ -15,4 +15,5 @@ export const logoutUser = (req, res) =>
       res,
       serviceMethod: authService.logoutUser,
       successMessage: "Logout successful",
+      clearRefreshToken: true,
     });

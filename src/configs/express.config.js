@@ -1,7 +1,7 @@
 import express from "express";
 import cors from "cors";
 import morgan from "morgan";
-
+import cookieParser from "cookie-parser";
 import indexRoute from "../routes/index.routes.js";
 import bodyParser from "body-parser";
 import constants from "../constants/index.js";
@@ -11,7 +11,7 @@ const app = express();
 app.use(bodyParser.json());
 
 app.use(bodyParser.urlencoded({extended: true}))
-
+app.use(cookieParser()); // REQUIRED FOR REFRESH TOKEN
 app.use((req, res, next) => {
   const origin = req.get("origin");
 

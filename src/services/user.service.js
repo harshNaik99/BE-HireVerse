@@ -1,17 +1,25 @@
 // services/auth.service.js
 import { User } from "../models/user.model.js";
 import { StringError } from "../errors/string.error.js";
-import { createAccessToken, createRefreshToken } from "../utils/jwt.util.js"
+import { createAccessToken, createRefreshToken } from "../utils/jwt.util.js";
 
-const registerUser = async (req) => {
+// -----------------------------
+// Helper: Validate required fields
+// -----------------------------
+const validateFields = (fields) => {
+  for (const [key, value] of Object.entries(fields)) {
+    if (!value) throw new StringError(`${key} is required`);
+  }
+};
+
+// -----------------------------
+// REGISTER USER
+// -----------------------------
+const registerUser = async (req, res) => {
   try {
     const { name, email, password, gender, address, userType, designation } = req.body;
 
-    if (!name) throw new StringError("Name is required");
-    if (!email) throw new StringError("Email is required");
-    if (!password) throw new StringError("Password is required");
-    if (!gender) throw new StringError("Gender is required");
-    if (!address) throw new StringError("Address is required");
+    validateFields({ name, email, password, gender, address });
 
     const userExists = await User.findOne({ email });
     if (userExists) throw new StringError("Email already registered. Please login.");
@@ -22,13 +30,14 @@ const registerUser = async (req) => {
       password,
       gender,
       address,
-      userType,
-      designation,
+      userType: userType || "Candidate",
+      designation: designation || "",
       is_active: true,
     });
 
-    const accessToken = createAccessToken({ id: newUser._id, email });
-    const refreshToken = createRefreshToken({ id: newUser._id, email });
+    // Generate tokens
+    const accessToken = createAccessToken({ id: newUser._id, email: newUser.email, userType: newUser.userType });
+    const refreshToken = createRefreshToken({ id: newUser._id,  email: newUser.email, userType: newUser.userType });
 
     return {
       success: true,
@@ -39,7 +48,8 @@ const registerUser = async (req) => {
         id: newUser._id,
         name: newUser.name,
         email: newUser.email,
-      }
+        userType: newUser.userType,
+      },
     };
 
   } catch (error) {
@@ -48,12 +58,14 @@ const registerUser = async (req) => {
   }
 };
 
-const loginUser = async (req) => {
+// -----------------------------
+// LOGIN USER
+// -----------------------------
+const loginUser = async (req, res) => {
   try {
     const { email, password } = req.body;
 
-    if (!email) throw new StringError("Email is required");
-    if (!password) throw new StringError("Password is required");
+    validateFields({ email, password });
 
     const user = await User.findOne({ email });
     if (!user) throw new StringError("Invalid email or password");
@@ -61,8 +73,8 @@ const loginUser = async (req) => {
     const isMatch = await user.comparePassword(password);
     if (!isMatch) throw new StringError("Invalid email or password");
 
-    const accessToken = createAccessToken({ id: user._id, email });
-    const refreshToken = createRefreshToken({ id: user._id, email });
+    const accessToken = createAccessToken({ id: user._id, email: user.email, userType: user.userType, });
+    const refreshToken = createRefreshToken({ id: user._id, email: user.email, userType: user.userType, });
 
     return {
       success: true,
@@ -83,22 +95,30 @@ const loginUser = async (req) => {
   }
 };
 
+// -----------------------------
+// GET USER PROFILE
+// -----------------------------
 const getUserProfile = async (req) => {
   try {
-    const userId = req.user.id; 
-    const user = await User.findById(userId).select("-password"); 
+    const userId = req.user.id;
+    const user = await User.findById(userId).select("-password");
 
     if (!user) throw new StringError("User not found");
 
-    return { user };
+    return {
+      success: true,
+      user,
+    };
+
   } catch (error) {
     if (error instanceof StringError) throw error;
     throw new StringError("Failed to fetch user profile");
   }
 };
 
-export default { 
+// -----------------------------
+export default {
   registerUser,
   loginUser,
-  getUserProfile
-}
+  getUserProfile,
+};
