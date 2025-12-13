@@ -9,7 +9,7 @@ export const handleServiceCall = async ({
   res, 
   serviceMethod, 
   successMessage, 
-  clearRefreshToken = false  // <-- added
+  clearRefreshToken = false 
 }) => {
   try {
     const result = await serviceMethod(req, res);

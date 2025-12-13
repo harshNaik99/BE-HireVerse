@@ -364,13 +364,24 @@ const listJobs = async (req) => {
       filters.experienceLevel = regexMatch(norm.experienceLevel);
 
     // ------------------------------------
-    // 7) Salary Filtering
-    // ------------------------------------
-    if (norm.minSalary || norm.maxSalary) {
-      filters.minSalary = {};
-      if (norm.minSalary) filters.minSalary.$gte = Number(norm.minSalary);
-      if (norm.maxSalary) filters.minSalary.$lte = Number(norm.maxSalary);
-    }
+// 7) Salary Filtering (Corrected)
+// ------------------------------------
+if (norm.minSalary !== undefined || norm.maxSalary !== undefined) {
+  filters.$and = [];
+
+  if (norm.minSalary !== undefined) {
+    filters.$and.push({
+      maxSalary: { $gte: Number(norm.minSalary) }
+    });
+  }
+
+  if (norm.maxSalary !== undefined) {
+    filters.$and.push({
+      minSalary: { $lte: Number(norm.maxSalary) }
+    });
+  }
+}
+
 
     // ------------------------------------
     // 8) Pagination

@@ -5,7 +5,7 @@ import {
   getProfile
 } from "../../controllers/user.controller.js";
 
-import { refreshToken,logoutUser } from "../../controllers/auth.controller.js";
+import { refreshToken,logoutUser,forgotPassword,changePassword,resetPassword } from "../../controllers/auth.controller.js";
 
 import authenticateUser from "../../middlewares/authenticate.middleware.js";
 
@@ -19,5 +19,9 @@ router.post("/refresh-token", refreshToken);
 
 router.get("/profile", authenticateUser, getProfile);
 router.post("/logout", logoutUser); 
+router.post("/forgotpassword", forgotPassword);
 
+router.post("/resetpassword", resetPassword);
+
+router.patch("/changepassword", authenticateUser, changePassword);
 export default router;

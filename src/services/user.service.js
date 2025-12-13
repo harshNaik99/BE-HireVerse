@@ -67,7 +67,7 @@ const loginUser = async (req, res) => {
 
     validateFields({ email, password });
 
-    const user = await User.findOne({ email });
+    const user = await User.findOne({ email }).select("+password");
     if (!user) throw new StringError("Invalid email or password");
 
     const isMatch = await user.comparePassword(password);
