@@ -1,5 +1,9 @@
 {
     "version": 2,
-    "routes": [{ "src": "/(.*)", "dest": "/api/index.js" }]
-  }
-  
+    "functions": {
+      "src/index.js": {
+        "runtime": "@vercel/node@3.0.0"
+      }
+    },
+    "rewrites": [{ "source": "/(.*)", "destination": "/src/index.js" }]
+}
