@@ -121,3 +121,5 @@ dist
 src/db/db_connection
 
 # End of https://mrkandreev.name/snippets/gitignore-generator/#Node
+.vercel
+.env*.local
