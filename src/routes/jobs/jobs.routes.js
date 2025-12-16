@@ -2,7 +2,7 @@
 import express from "express";
 import authenticateUser from "../../middlewares/authenticate.middleware.js";
 import { requireHR } from "../../middlewares/requireHR.middleware.js";
-import { createJob,createBulkJobs,getJobById,getJobBySlug,listJobs,suggestJobs,listFeaturedJobs,listMyJobs,updateJob,deleteJob,incrementJobView,getApplicantsCount,applyToJob,listApplicantsForJob} from "../../controllers/job.controller.js";
+import { createJob,createBulkJobs,getJobById,getJobBySlug,listJobs,suggestJobs,listFeaturedJobs,listMyJobs,updateJob,deleteJob,incrementJobView,getApplicantsCount,applyToJob,listApplicantsForJob, closeJob, deleteJobPermanent} from "../../controllers/job.controller.js";
 
 
 const router = express.Router();
@@ -27,7 +27,12 @@ router.get("/:id/applicants", authenticateUser, listApplicantsForJob)
 router.get("/:id", getJobById); // PUBLIC
 
 router.patch("/:id", authenticateUser, updateJob);
+
+router.patch("/:id/close", authenticateUser, closeJob);
+
 router.delete("/:id", authenticateUser, deleteJob);
+
+router.delete("/:id/permanent", authenticateUser, deleteJobPermanent);
 
 router.get("/slug/:slug", getJobBySlug);
 

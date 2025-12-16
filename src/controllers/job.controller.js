@@ -74,12 +74,30 @@ export const updateJob = (req, res) =>
     successMessage: "Job updated successfully",
   });
 
+  export const closeJob = (req, res) =>
+    handleServiceCall({
+      req,
+      res,
+      serviceMethod: jobService.closeJob,
+      successMessage: "Job closed successfully",
+    });
+  
+  // ARCHIVE (your current delete)
   export const deleteJob = (req, res) =>
     handleServiceCall({
       req,
       res,
       serviceMethod: jobService.deleteJob,
       successMessage: "Job archived successfully",
+    });
+  
+  // PERMANENT DELETE (optional)
+  export const deleteJobPermanent = (req, res) =>
+    handleServiceCall({
+      req,
+      res,
+      serviceMethod: jobService.deleteJobPermanent,
+      successMessage: "Job permanently deleted",
     });
 
 export const incrementJobView = (req, res) =>

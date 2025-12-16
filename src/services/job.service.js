@@ -275,11 +275,45 @@ const getJobBySlug = async (req) => {
 // -----------------------------
 // GET /jobs (search / filter / pagination)
 // -----------------------------
-const listJobs = async (req) => {
+const toInt = (v, def) => {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : def;
+};
+
+const bool = (v) => {
+  if (v === undefined) return undefined;
+  if (typeof v === "boolean") return v;
+  const s = String(v).toLowerCase();
+  if (s === "true") return true;
+  if (s === "false") return false;
+  return undefined;
+};
+
+const normString = (v) => (typeof v === "string" ? v.trim().toLowerCase() : undefined);
+
+const normStringArray = (v) => {
+  if (!v) return undefined;
+  if (Array.isArray(v)) {
+    return v.map((s) => String(s).toLowerCase().trim()).filter(Boolean);
+  }
+  // comma-separated
+  return String(v)
+    .split(",")
+    .map((s) => s.toLowerCase().trim())
+    .filter(Boolean);
+};
+
+const ALLOWED_SORTS = {
+  // public-safe sorting keys
+  date: { createdAt: -1 },
+  recent: { createdAt: -1 },
+  title: { title: 1 },
+  salary: { minSalary: -1 }, // sorts by lower bound desc
+};
+
+export const listJobs = async (req) => {
   try {
-    // ------------------------------------
     // 1) Extract and normalize query params
-    // ------------------------------------
     const {
       q,
       skills,
@@ -291,38 +325,46 @@ const listJobs = async (req) => {
       experienceLevel,
       minSalary,
       maxSalary,
-      sort = "date",
+      isFeatured,
       page = 1,
       limit = 10,
-    } = req.query;
+      sort = "date",
+    } = req.query || {};
 
-    // Lowercase params for consistency
     const norm = {
-      q: q?.toLowerCase(),
-      location: location?.toLowerCase(),
-      skills,
-      companyId,
-      applyType: applyType?.toLowerCase(),
-      jobType: jobType?.toLowerCase(),
-      workMode: workMode?.toLowerCase(),
-      experienceLevel: experienceLevel?.toLowerCase(),
-      minSalary,
-      maxSalary,
-      sort,
+      q: normString(q),
+      location: normString(location),
+      skills: normStringArray(skills),
+      companyId: companyId && mongoose.isValidObjectId(companyId) ? companyId : undefined,
+      applyType: normString(applyType),
+      jobType: normString(jobType),
+      workMode: normString(workMode),
+      experienceLevel: normString(experienceLevel),
+      minSalary: minSalary !== undefined ? toInt(minSalary, undefined) : undefined,
+      maxSalary: maxSalary !== undefined ? toInt(maxSalary, undefined) : undefined,
+      isFeatured: bool(isFeatured),
+      pageNum: Math.max(toInt(page, 1), 1),
+      limitNum: Math.min(Math.max(toInt(limit, 10), 1), 50),
+      sortKey: typeof sort === "string" ? sort.toLowerCase().trim() : "date",
     };
 
-    // ------------------------------------
-    // 2) Base filters: active & approved jobs
-    // ------------------------------------
+    // 2) Base filters: only active & approved jobs for public listing
     const filters = {
       isActive: true,
       isApproved: true,
     };
 
-    // ------------------------------------
-    // 3) Text Search (q)
-    // ------------------------------------
+    // Optional featured filter
+    if (norm.isFeatured !== undefined) {
+      filters.isFeatured = norm.isFeatured;
+    }
+
+    // 3) Text search (q)
+    // Prefer a text index when available for better performance; fallback to regex.
     if (norm.q) {
+      // If you created a text index on title/description/companyName/skills:
+      // filters.$text = { $search: norm.q }
+      // Otherwise use regex OR:
       filters.$or = [
         { title: { $regex: norm.q, $options: "i" } },
         { description: { $regex: norm.q, $options: "i" } },
@@ -330,104 +372,79 @@ const listJobs = async (req) => {
       ];
     }
 
-    // ------------------------------------
-    // 4) Location Search
-    // ------------------------------------
+    // 4) Location filter (case-insensitive contains)
     if (norm.location) {
       filters.location = { $regex: norm.location, $options: "i" };
     }
 
-    // ------------------------------------
-    // 5) Skills Search
-    // ------------------------------------
-    if (norm.skills) {
-      const arr = Array.isArray(norm.skills)
-        ? norm.skills
-        : norm.skills.split(",");
-
-      filters.skills = {
-        $in: arr.map((s) => s.toLowerCase().trim()),
-      };
+    // 5) Skills filter: any overlap with provided skills
+    if (norm.skills && norm.skills.length) {
+      filters.skills = { $in: norm.skills };
     }
 
-    // ------------------------------------
-    // 6) Exact filters with case-insensitive matching
-    // ------------------------------------
-    const regexMatch = (val) =>
-      ({ $regex: `^${val}$`, $options: "i" });
-
+    // 6) Exact filters using case-insensitive match on enums
+    const regexEq = (val) => ({ $regex: `^${val}$`, $options: "i" });
     if (norm.companyId) filters.companyId = norm.companyId;
-    if (norm.applyType) filters.applyType = regexMatch(norm.applyType);
-    if (norm.jobType) filters.jobType = regexMatch(norm.jobType);
-    if (norm.workMode) filters.workMode = regexMatch(norm.workMode);
-    if (norm.experienceLevel)
-      filters.experienceLevel = regexMatch(norm.experienceLevel);
+    if (norm.applyType) filters.applyType = regexEq(norm.applyType);
+    if (norm.jobType) filters.jobType = regexEq(norm.jobType);
+    if (norm.workMode) filters.workMode = regexEq(norm.workMode);
+    if (norm.experienceLevel) filters.experienceLevel = regexEq(norm.experienceLevel);
 
-    // ------------------------------------
-// 7) Salary Filtering (Corrected)
-// ------------------------------------
-if (norm.minSalary !== undefined || norm.maxSalary !== undefined) {
-  filters.$and = [];
+    // 7) Salary overlap filtering
+    // Show jobs where the job’s [minSalary, maxSalary] overlaps the user’s desired [minSalary, maxSalary].
+    // If only min is provided: job.maxSalary >= min
+    // If only max is provided: job.minSalary <= max
+    // If both: (job.max >= min) AND (job.min <= max)
+    const andClauses = [];
+    if (Number.isFinite(norm.minSalary) && !Number.isFinite(norm.maxSalary)) {
+      andClauses.push({ $or: [{ maxSalary: null }, { maxSalary: { $gte: norm.minSalary } }] });
+    } else if (!Number.isFinite(norm.minSalary) && Number.isFinite(norm.maxSalary)) {
+      andClauses.push({ $or: [{ minSalary: null }, { minSalary: { $lte: norm.maxSalary } }] });
+    } else if (Number.isFinite(norm.minSalary) && Number.isFinite(norm.maxSalary)) {
+      andClauses.push({ $or: [{ maxSalary: null }, { maxSalary: { $gte: norm.minSalary } }] });
+      andClauses.push({ $or: [{ minSalary: null }, { minSalary: { $lte: norm.maxSalary } }] });
+    }
+    if (andClauses.length) {
+      filters.$and = andClauses;
+    }
 
-  if (norm.minSalary !== undefined) {
-    filters.$and.push({
-      maxSalary: { $gte: Number(norm.minSalary) }
-    });
-  }
-
-  if (norm.maxSalary !== undefined) {
-    filters.$and.push({
-      minSalary: { $lte: Number(norm.maxSalary) }
-    });
-  }
-}
-
-
-    // ------------------------------------
     // 8) Pagination
-    // ------------------------------------
-    const pageNum = Math.max(Number(page) || 1, 1);
-    const limitNum = Math.min(Number(limit) || 10, 50);
-    const skip = (pageNum - 1) * limitNum;
+    const skip = (norm.pageNum - 1) * norm.limitNum;
 
-    // ------------------------------------
-    // 9) Sorting
-    // ------------------------------------
-    let sortObj = { createdAt: -1 }; // default
+    // 9) Sorting (safe allowlist)
+    const sortObj = ALLOWED_SORTS[norm.sortKey] || ALLOWED_SORTS.date;
 
-    if (norm.sort === "salary") sortObj = { minSalary: -1 };
-    if (norm.sort === "title") sortObj = { title: 1 };
-    if (norm.sort === "recent") sortObj = { createdAt: -1 };
+    // 10) Projection
+    // ✅ return all fields from Job documents (no projection)
+    const projection = undefined;
 
-    // ------------------------------------
-    // 10) DB Query + COUNT
-    // ------------------------------------
+    // 11) DB Query + COUNT (use lean for speed)
     const [results, total] = await Promise.all([
-      Job.find(filters)
+      Job.find(filters, projection)
         .sort(sortObj)
         .skip(skip)
-        .limit(limitNum)
+        .limit(norm.limitNum)
+        .lean()
         .populate("companyId", "name logo")
         .populate("postedBy", "name"),
       Job.countDocuments(filters),
     ]);
 
-    // ------------------------------------
-    // 11) API Response
-    // ------------------------------------
+    // 12) Response
     return {
       success: true,
-      page: pageNum,
-      limit: limitNum,
+      page: norm.pageNum,
+      limit: norm.limitNum,
       total,
-      pages: Math.ceil(total / limitNum),
+      pages: Math.ceil(total / norm.limitNum),
       results,
     };
   } catch (error) {
     console.error("JOB_LIST_ERROR:", error);
-    throw new StringError("Failed to fetch job listings");
+    throw new Error("Failed to fetch job listings");
   }
 };
+
 
 // -----------------------------
 // GET /jobs/search/suggest?q=
@@ -500,38 +517,35 @@ const listFeaturedJobs = async (req) => {
   }
 };
 
+
 const listMyJobs = async (req) => {
   try {
     const userId = req.user.id;
 
-    // query params
     const {
       page = 1,
       limit = 10,
       q,
-      status,
+      status,     // active/expired (date-based)
       isFeatured,
+      jobStatus,  // ✅ NEW: published/draft/closed/archived
     } = req.query;
 
-    const filter = {
-      postedBy: userId, // only my jobs
-    };
+    const postedById = new mongoose.Types.ObjectId(userId);
 
-    // search by title keyword
-    if (q) {
-      filter.title = { $regex: q, $options: "i" };
+    const filter = { postedBy: postedById };
+
+    if (q) filter.title = { $regex: q, $options: "i" };
+
+    if (isFeatured === "true") filter.isFeatured = true;
+    if (isFeatured === "false") filter.isFeatured = false;
+
+    // ✅ NEW: server-side tab filter
+    if (jobStatus && jobStatus !== "all") {
+      filter.status = jobStatus; // must match your Job.status values
     }
 
-    // filter by featured
-    if (isFeatured === "true") {
-      filter.isFeatured = true;
-    }
-    if (isFeatured === "false") {
-      filter.isFeatured = false;
-    }
-
-    // filter by job status:
-    // active or expired
+    // existing active/expired filter
     if (status === "active") {
       filter.expiryDate = { $gte: new Date() };
       filter.isActive = true;
@@ -542,35 +556,57 @@ const listMyJobs = async (req) => {
       filter.expiryDate = { $lt: new Date() };
     }
 
-    const skip = (Number(page) - 1) * Number(limit);
+    const pageNum = Math.max(1, Number(page) || 1);
+    const limitNum = Math.min(5000, Math.max(1, Number(limit) || 10)); // allow "fetch all"
+    const skip = (pageNum - 1) * limitNum;
 
-    const [jobs, total] = await Promise.all([
+    const [jobs, total, statsAgg] = await Promise.all([
       Job.find(filter)
         .sort({ createdAt: -1 })
         .skip(skip)
-        .limit(Number(limit))
+        .limit(limitNum)
         .populate("postedBy", "name email userType")
         .populate("companyId", "name logo website"),
+
       Job.countDocuments(filter),
+
+      Job.aggregate([
+        { $match: filter },
+        {
+          $group: {
+            _id: null,
+            total: { $sum: 1 },
+            published: { $sum: { $cond: [{ $eq: ["$status", "published"] }, 1, 0] } },
+            draft: { $sum: { $cond: [{ $eq: ["$status", "draft"] }, 1, 0] } },
+            closed: { $sum: { $cond: [{ $eq: ["$status", "closed"] }, 1, 0] } },
+            archived: { $sum: { $cond: [{ $eq: ["$status", "archived"] }, 1, 0] } },
+            views: { $sum: { $ifNull: ["$totalViews", 0] } },
+            apps: { $sum: { $ifNull: ["$totalApplications", 0] } },
+          },
+        },
+        { $project: { _id: 0 } },
+      ]),
     ]);
+
+    const stats =
+      statsAgg?.[0] ?? { total: 0, published: 0, draft: 0, closed: 0, archived: 0, views: 0, apps: 0 };
 
     return {
       success: true,
       jobs,
+      stats,
       pagination: {
-        page: Number(page),
-        limit: Number(limit),
+        page: pageNum,
+        limit: limitNum,
         total,
-        totalPages: Math.ceil(total / limit),
+        totalPages: Math.ceil(total / limitNum),
       },
     };
   } catch (error) {
-    if (error instanceof StringError) throw error;
     console.error("MY_JOBS_FETCH_ERROR:", error);
     throw new StringError("Failed to fetch HR posted jobs");
   }
 };
-
 
 const updateJob = async (req) => {
   try {
@@ -651,28 +687,75 @@ const updateJob = async (req) => {
   }
 };
 
-const deleteJob = async (req) => {
-  try {
-    const userId = req.user.id;
-    const jobId = req.params.id;
+const assertValidObjectId = (id) => {
+  if (!mongoose.Types.ObjectId.isValid(id)) {
+    throw new StringError("Invalid job id");
+  }
+};
 
-    if (!mongoose.Types.ObjectId.isValid(jobId)) {
-      throw new StringError("Invalid job id");
-    }
+const assertOwnerOrAdmin = (job, req) => {
+  const userId = req.user.id;
+  const isOwner = job.postedBy?.toString?.() === userId;
+  const isAdmin = req.user.userType === "admin";
+
+  if (!isOwner && !isAdmin) {
+    throw new StringError("You are not authorized");
+  }
+};
+
+/**
+ * CLOSE JOB (business action)
+ * - status: closed
+ * - isActive: false (remove from active feed)
+ * - closedAt: timestamp
+ */
+const closeJob = async (req) => {
+  try {
+    const jobId = req.params.id;
+    assertValidObjectId(jobId);
 
     const job = await Job.findById(jobId);
+    if (!job) throw new StringError("Job not found");
 
-    if (!job) {
-      throw new StringError("Job not found");
+    assertOwnerOrAdmin(job, req);
+
+    // If already archived, don't allow close (optional rule)
+    if (job.status === "archived") {
+      throw new StringError("Archived job cannot be closed");
     }
 
-    // Only owner or admin can delete
-    if (job.postedBy.toString() !== userId && req.user.userType !== "admin") {
-      throw new StringError("You are not authorized to delete this job");
-    }
-
-    // Soft delete
+    job.status = "closed";
     job.isActive = false;
+    job.closedAt = new Date();
+
+    await job.save();
+
+    return {
+      success: true,
+      message: "Job closed successfully",
+      jobId,
+    };
+  } catch (error) {
+    if (error instanceof StringError) throw error;
+    console.error("CLOSE_JOB_ERROR:", error);
+    throw new StringError("Failed to close job");
+  }
+};
+
+const deleteJob = async (req) => {
+  try {
+    const jobId = req.params.id;
+    assertValidObjectId(jobId);
+
+    const job = await Job.findById(jobId);
+    if (!job) throw new StringError("Job not found");
+
+    assertOwnerOrAdmin(job, req);
+
+    job.status = "archived";
+    job.isActive = false;
+    job.archivedAt = new Date();
+
     await job.save();
 
     return {
@@ -686,6 +769,33 @@ const deleteJob = async (req) => {
     throw new StringError("Failed to delete job");
   }
 };
+
+const deleteJobPermanent = async (req) => {
+  try {
+    const jobId = req.params.id;
+    assertValidObjectId(jobId);
+
+    if (req.user.userType !== "admin") {
+      throw new StringError("Only admin can permanently delete jobs");
+    }
+
+    const job = await Job.findById(jobId);
+    if (!job) throw new StringError("Job not found");
+
+    await Job.deleteOne({ _id: jobId });
+
+    return {
+      success: true,
+      message: "Job permanently deleted",
+      jobId,
+    };
+  } catch (error) {
+    if (error instanceof StringError) throw error;
+    console.error("DELETE_JOB_PERMANENT_ERROR:", error);
+    throw new StringError("Failed to permanently delete job");
+  }
+};
+
 
 const incrementJobView = async (req) => {
   try {
@@ -863,7 +973,9 @@ export default {
   listFeaturedJobs,
   listMyJobs,
   updateJob,
+  closeJob,
   deleteJob,
+  deleteJobPermanent,
   incrementJobView,
   getApplicantsCount,
   applyToJob,
