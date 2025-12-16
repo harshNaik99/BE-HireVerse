@@ -3,7 +3,8 @@
     "functions": {
         "index.js": {
             "runtime": "@vercel/node@3.0.0",
-            "includeFiles": ["dist/**"]
+        
+            "includeFiles": "dist/**" 
         }
     },
     "rewrites": [
