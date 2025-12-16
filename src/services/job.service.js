@@ -1,11 +1,12 @@
 // src/services/job.service.js
 import mongoose from "mongoose";
 import { Job } from "../models/job.model.js";
+import { JobView } from "../models/jobview.model.js";
 import { Company } from "../models/company.model.js";
 import {Application} from "../models/appication.model.js"
 import { StringError } from "../errors/string.error.js";
 import { slugify } from "../utils/slugify.util.js";
-
+import { createHash } from "node:crypto"; 
 // -----------------------------
 // Helper: Validate required fields
 // -----------------------------
@@ -14,6 +15,20 @@ const validateJobFields = (fields) => {
     if (!value) throw new StringError(`${key} is required`);
   }
 };
+
+function getClientIp(req) {
+  // If trust proxy is enabled, req.ip will already be the client IP in most setups. [web:976]
+  // But we still handle x-forwarded-for explicitly.
+  const xf = req.headers["x-forwarded-for"];
+  if (typeof xf === "string" && xf.length) return xf.split(",")[0].trim();
+  return req.ip;
+}
+
+function ipVisitorKey(req) {
+  const ip = getClientIp(req) || "0.0.0.0";
+  // hash so you don't store raw IPs
+  return createHash("sha256").update(ip).digest("hex");
+}
 
 // -----------------------------
 // CREATE JOB
@@ -798,29 +813,31 @@ const deleteJobPermanent = async (req) => {
 
 
 const incrementJobView = async (req) => {
-  try {
-    const jobId = req.params.id;
+  const jobId = req.params.id;
 
-    if (!mongoose.Types.ObjectId.isValid(jobId)) {
-      throw new StringError("Invalid job id");
-    }
-
-    await Job.findByIdAndUpdate(
-      jobId,
-      { $inc: { totalViews: 1 } }, // increment counter
-      { new: false }
-    );
-
-    return {
-      success: true,
-      jobId,
-    };
-  } catch (error) {
-    if (error instanceof StringError) throw error;
-    console.error("INCREMENT_JOB_VIEW_ERROR:", error);
-    throw new StringError("Failed to increment job view");
+  if (!mongoose.Types.ObjectId.isValid(jobId)) {
+    throw new StringError("Invalid job id");
   }
+
+  const visitorKey = ipVisitorKey(req);
+
+  // 1) Try to create a dedupe record.
+  //    If duplicate (code 11000), it means this IP already viewed in the TTL window. [web:994]
+  try {
+    await JobView.create({ jobId, visitorKey });
+  } catch (err) {
+    if (err && err.code === 11000) {
+      return { success: true, jobId, counted: false };
+    }
+    throw err;
+  }
+
+  // 2) Only increment views if insert succeeded (atomic $inc) [web:967]
+  await Job.findByIdAndUpdate(jobId, { $inc: { totalViews: 1 } }, { new: false });
+
+  return { success: true, jobId, counted: true };
 };
+
 
 
 const getApplicantsCount = async (req) => {

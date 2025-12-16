@@ -20,7 +20,7 @@ router.get("/featured", listFeaturedJobs);
 
 router.get("/my", authenticateUser, listMyJobs);
 router.get("/:id/applicants-count", getApplicantsCount);
-router.post("/:id/increment-view", incrementJobView);
+router.post("/:id/view", incrementJobView);
 router.post("/:id/apply", authenticateUser, applyToJob);
 
 router.get("/:id/applicants", authenticateUser, listApplicantsForJob)
